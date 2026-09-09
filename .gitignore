@@ -1,0 +1,7 @@
+.venv/
+data/raw/
+data/cache/
+runs/
+.env
+.env.*
+*.glb
