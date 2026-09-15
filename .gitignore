@@ -10,3 +10,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 /GITIGNORE_SUGGESTIONS.txt
+/AGENTS.md
