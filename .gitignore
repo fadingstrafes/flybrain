@@ -11,3 +11,5 @@ __pycache__/
 .pytest_cache/
 /GITIGNORE_SUGGESTIONS.txt
 /AGENTS.md
+/CLAUDE.md
+
