@@ -1,10 +1,10 @@
 # FlyBrain
 
-An interactive fruit fly connectome simulator: stimulate neurons, watch activity propagate through anatomical connections, and explore how mapped motor output moves a virtual fly.
+An experimental fruit fly connectome simulator with a live neural viewer, a 3D arena, and a learning Minecraft agent with simulated RGB eyes.
 
-FlyBrain connects the Drosophila Male CNS dataset to sparse neural simulation, GPU rendering, and a live 3D arena. It brings together scientific data processing, GPU computing, interactive graphics, and reinforcement learning in one local Python project.
+FlyBrain connects the Drosophila Male CNS dataset to sparse neural simulation, GPU rendering, and persistent learning. In Minecraft, an independent Survival player wears a procedural fly body, receives paired eye images, and can interact with blocks and its own inventory while you observe it.
 
-**Stack:** Python · NumPy / SciPy · pandas / PyArrow · PyTorch / ROCm · ModernGL / OpenGL · GLFW
+**Stack:** Python · NumPy / SciPy · pandas / PyArrow · PyTorch / ROCm · ModernGL / OpenGL · GLFW · Java 25 · Fabric / Minecraft 26.3
 
 > This is an experimental model built from anatomical data. Neural dynamics, sensory mappings, and body movement are simplified assumptions; simulated behavior is not validated fly physiology.
 
@@ -15,10 +15,40 @@ FlyBrain connects the Drosophila Male CNS dataset to sparse neural simulation, G
 - **Run a live virtual fly.** Environmental sensory input passes through the sparse connectome to mapped motors, driving a procedural body with walking, takeoff, and landing.
 - **Paint stimulation onto neurons.** Draw on the CNS view or load local video/audio; image brightness and audio spectrograms become spatially mapped input currents.
 - **Run targeted experiments.** Stimulate individual body IDs or annotated sensory populations, inspect motor responses, and replay recorded activity.
-- **Experiment with learning.** A persistent tabular Q-learning controller selects sensory-drive and flight actions. A separate evaluator compares trained, untrained, and fixed controllers across seeds.
+- **Experiment with learning.** The arena uses tabular Q-learning; Minecraft uses a linear Q readout with eligibility traces and bounded replay. Both retain learned parameters across sessions. The arena has a paired evaluator; a repeatable Minecraft survival benchmark is the next priority.
 - **Inspect the results.** Export spike events, counts, motor summaries, trajectories, and run configuration for analysis.
 
-## How it works
+## Minecraft: current state
+
+The integrated-server prototype includes a separate player inventory, breaking and
+placing blocks, primitive crafting, eating, damage/death, and standing, crawling
+and flight controls. F9 follows the fly; F8 pauses its actions. Manual spawning
+provides four bread and renewable berry bushes on suitable nearby ground.
+
+Two 96×64 RGB cameras feed simulated compound-eye samples into 9,642 annotated
+visual input cells. The brain window shows the exact eye images, samples, temporal
+brightness changes, active neurons and game-derived body-state estimates.
+Existing policy checkpoints migrate without discarding learned weights.
+
+**Capability is ahead of demonstrated learning.** Automated tests prove the fly
+can use these controls and that image signals propagate. They do not establish
+that it recognizes food from pixels, builds useful shelters on its own, or gets
+better at survival after each death. Food labels and shelter scores currently
+include explicit game-derived cues. Pain/stress estimates are engineered proxies.
+
+After preparing Python and the connectome below, build and install the Fabric mod
+using [MINECRAFT.md](MINECRAFT.md), then start:
+
+```bash
+python -B -m src.minecraft_service --device cuda --viewer
+```
+
+Enter a singleplayer test world and run `/flybrain spawn`. Use `/flybrain forage`
+to add renewable plants around an existing fly. Dedicated servers and active
+shader packs are not yet validated. See the [development roadmap](ROADMAP.md)
+for priorities, acceptance checks, and the next-session starting point.
+
+## How the arena works
 
 ```mermaid
 flowchart LR
@@ -199,6 +229,17 @@ python -B -m unittest discover -s tests -v
 
 Tests cover CPU/GPU propagation agreement, graph projection, recording integrity, motor-dependent movement, learning persistence, visual input, and rendering. GPU and offscreen rendering checks depend on device access and EGL; unavailable capabilities may be skipped.
 
+On 2026-10-07, all 62 Python tests passed with GPU access. The Minecraft client
+test also passed with the installed Fabulously Optimized mod jars in an isolated
+world, checking inventory/block interactions, starter eating, berry harvesting,
+eye capture and avatar rendering. These are integration checks, not a survival
+learning benchmark. Run Minecraft checks with JDK 25:
+
+```bash
+./minecraft-mod/gradlew -p minecraft-mod build
+./minecraft-mod/gradlew -p minecraft-mod runClientGameTest
+```
+
 Audit the locally built source graph and known anatomical connections:
 
 ```bash
@@ -210,8 +251,8 @@ python -m src.audit_connectome --check-edges --output runs/connectome_audit.json
 - **Transmitter effects are simplified:** acetylcholine is `+1`, GABA is `−1`, and all other transmitters are `0`. Receptor-specific effects are not modeled.
 - **Neural dynamics are a toy model:** leak, thresholds, resets, input currents, and neural-to-arena timing are imposed parameters.
 - **Movement is kinematic:** gait, motor decoding, collision geometry, and flight are engineered approximations, without realistic muscles or aerodynamics.
-- **Vision includes synthetic mappings:** raycast RGB/depth sectors map onto annotated visual relays without measured retinal assignments. The default obstacle-avoidance assist is an engineered controller.
-- **Learning is external to the connectome:** Q-learning chooses stimulation actions and flight requests; it does not modify anatomical weights or model biological synaptic plasticity. A short paired evaluation did not improve mean coverage over the baselines, so improved navigation is not established.
+- **Vision includes synthetic mappings:** the arena uses raycast sectors and an optional steering assist. Minecraft renders actual RGB cameras, but facet-to-neuron assignment is synthetic. Parallel image input to L2/L3 substitutes for retinal transmission that the current neutral photoreceptor transmitter signs cannot provide.
+- **Learning is external to the connectome:** arena Q-learning chooses stimulation and flight requests; the Minecraft readout chooses player actions using neural activity and supplied state cues. Neither modifies anatomical weights or models biological synaptic plasticity. A short arena evaluation did not improve mean coverage over baselines; improved Minecraft survival has not been demonstrated.
 
 ## Project map
 
@@ -225,14 +266,20 @@ python -m src.audit_connectome --check-edges --output runs/connectome_audit.json
 | `src/arena_model.py`, `src/arena_vision.py` | Body kinematics and environmental sensing |
 | `src/arena_learning.py`, `src/evaluate_arena.py` | Persistent controller and paired evaluation |
 | `src/fly_brain_opengl.py`, `src/run_data.py` | Recorded-run visualization and compatible data loading |
+| `minecraft-mod/` | Fabric player agent, procedural model, RGB capture and foraging |
+| `src/minecraft_service.py`, `src/minecraft_brain.py` | Local game bridge and neural stepping |
+| `src/minecraft_learning.py`, `src/minecraft_drives.py` | Persistent action readout and survival rewards |
+| `src/minecraft_vision.py`, `src/minecraft_viewer.py` | Visual stimulation and live eye/brain display |
 | `tests/` | Regression and integration checks |
 
 ## Next steps
 
-- Evaluate longer training runs and more challenging navigation starts.
-- Improve credit assignment, task goals, and stuck recovery.
-- Add more realistic articulated contact and body mechanics.
-- Expand morphology coverage and reproducible stimulation experiments.
+1. Build repeatable Minecraft survival trials and measure the existing baseline.
+2. Verify that changes in eye input affect useful actions, including ablations of supplied food cues.
+3. Improve foraging and long action sequences, then test learned shelter construction.
+4. Improve circuit provenance, dashboard diagnostics and rendering performance.
+
+See [ROADMAP.md](ROADMAP.md) for ordered tasks and measurable completion criteria.
 
 ## Data and acknowledgments
 

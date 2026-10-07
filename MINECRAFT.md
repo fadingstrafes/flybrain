@@ -185,7 +185,7 @@ cd minecraft-mod
 From the repository root:
 
 ```bash
-.venv/bin/python -B -m unittest tests.test_minecraft tests.test_minecraft_drives tests.test_live_arena -v
+.venv/bin/python -B -m unittest tests.test_minecraft tests.test_minecraft_drives tests.test_minecraft_vision tests.test_live_arena -v
 .venv/bin/python -B -m src.minecraft_smoke --device cuda
 ```
 
@@ -194,15 +194,16 @@ isolated temporary policy and an offscreen OpenGL render. It never trains the
 user's Minecraft policy. It checks real neural response and checkpoint restoration,
 not in-game skill. Reports and a brain screenshot go to `runs/minecraft_smoke`.
 
-Bridge validation: mod compiled for 26.3; 16 targeted tests passed; AMD GPU
-smoke produced 28,847 spikes across 167,176 retained cells and successfully
-restored memory after one synthetic death. The isolated Minecraft test passed
-independent spawning, inventory crafting, actual Survival block placement and
-breaking, crawl/flight controls, damage and death notification. This also
-regresses the login-time "invalid player data" error: command availability now
-handles Minecraft's temporary command context without a server. Fake players
-acknowledge loading so normal damage rules apply. Full compatibility with other
-installed mods still requires a gameplay session.
+Validation on 2026-10-07: 23 targeted Python tests and the full 62-test suite
+passed with GPU access. The real-image GPU smoke produced 210,179 spikes across
+167,176 retained cells, restored a temporary checkpoint and rendered the eye/brain
+dashboard. The isolated Minecraft test passed independent spawning, inventory
+crafting, Survival block placement/breaking, crawl/flight, damage/death, starter
+eating, berry harvesting and paired RGB capture. It also passed with the installed
+Fabulously Optimized jars in default test settings. Active shader packs and the
+user's existing world/configuration were not tested. The login-time "invalid
+player data" regression is covered; fake players acknowledge loading so normal
+damage rules apply. These results validate integration, not improved survival.
 
 ## Fly embodiment
 
@@ -331,3 +332,14 @@ The isolated game test verifies starter eating, ripe-bush detection and harvesti
 that leaves a regrowing plant, RGB capture including sky, and previous player
 capabilities. It also passed using the installed Fabulously Optimized mod jars,
 including Sodium/Iris, in a separate test world with default test settings.
+
+## Next development session
+
+Start with repeatable survival evaluation before changing rewards or expanding
+the learner. Then test visual contribution with controlled ablations, improve
+sustainable foraging, and tackle multi-step gathering/crafting/shelter behavior.
+The ordered tasks and acceptance checks are in [ROADMAP.md](ROADMAP.md).
+Keep evaluation worlds and policies separate from normal play; the default
+learning file is `data/cache/minecraft/policy.json` and event log is
+`runs/minecraft/events.jsonl`. Current policy schema is v3 with 152 features;
+migrations preserve older weights and back up the previous checkpoint.
