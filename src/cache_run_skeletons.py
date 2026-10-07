@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from navis.interfaces import neuprint as navis_neuprint
+from src.run_data import load_run
 
 
 CACHE = Path("data/cache")
@@ -131,17 +131,15 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.max_neurons < 1 or args.min_spikes < 1:
+        parser.error("--max-neurons and --min-spikes must be positive")
 
     run = Path(args.run)
 
-    events = np.load(
-        run / "spike_events.npz"
-    )
-
-    body_ids = (
-        events["bodyId"]
-        .astype(np.int64)
-    )
+    events = load_run(run)
+    for notice in events.notices:
+        print(notice)
+    body_ids = events.body_ids
 
     unique_ids, counts = np.unique(
         body_ids,
@@ -220,7 +218,10 @@ def main():
             "category": category,
         })
 
-    ranked = pd.DataFrame(rows)
+    ranked = pd.DataFrame(rows, columns=["bodyId", "spikes", "instance", "superclass", "category"])
+    if ranked.empty:
+        print("No neurons meet --min-spikes; existing skeleton cache was left unchanged.")
+        return
 
     ranked = (
         ranked
@@ -352,15 +353,7 @@ def main():
     # neuPrint connection
     # --------------------------------------------------
 
-    token = os.environ[
-        "NEUPRINT_APPLICATION_CREDENTIALS"
-    ]
-
-    client = navis_neuprint.Client(
-        "https://neuprint.janelia.org",
-        dataset="male-cns:v1.0",
-        token=token,
-    )
+    client = None
 
     # --------------------------------------------------
     # Fetch in small batches
@@ -401,6 +394,19 @@ def main():
                 f"Batch {start}: cached"
             )
             continue
+
+        if client is None:
+            token = os.environ.get("NEUPRINT_APPLICATION_CREDENTIALS")
+            if not token:
+                raise RuntimeError(
+                    "Missing skeletons require NEUPRINT_APPLICATION_CREDENTIALS. "
+                    "Existing cached skeletons can be viewed offline."
+                )
+            from navis.interfaces import neuprint as navis_neuprint
+
+            client = navis_neuprint.Client(
+                "https://neuprint.janelia.org", dataset="male-cns:v1.0", token=token,
+            )
 
         print()
         print(

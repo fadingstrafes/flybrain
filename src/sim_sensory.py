@@ -28,6 +28,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Stimulate annotated MaleCNS sensory populations"
     )
+    parser.add_argument(
+        "--backend", choices=["cpu", "gpu"], default="cpu",
+        help="Simulator backend (gpu uses PyTorch/ROCm)",
+    )
 
     parser.add_argument(
         "--system",
@@ -339,7 +343,7 @@ def main():
     command = [
         sys.executable,
         "-m",
-        "src.sim_full",
+        "src.sim_full_gpu" if args.backend == "gpu" else "src.sim_full",
 
         "--stimulate",
         *[str(x) for x in chosen_ids],

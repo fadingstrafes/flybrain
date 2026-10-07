@@ -9,13 +9,16 @@ import torch
 path = Path("data/cache/connectome_raw.npz")
 
 print("Loading connectome...")
-W = sp.load_npz(path).tocsr().astype(np.float32)
+# Anatomical cache is W[pre, post]; benchmark the simulator's propagation.
+W = sp.load_npz(path).transpose().tocsr().astype(np.float32)
 
 n = W.shape[0]
 
 print(f"Shape: {W.shape}")
 print(f"Edges: {W.nnz:,}")
 print(f"Density: {W.nnz / (n*n):.8f}")
+print("Operation: W.T @ presynaptic activity (raw weights)")
+print("CPU baseline: full sparse matvec, not the event-driven CPU simulator")
 
 # ------------------------------------------------------------
 # Random activity vector

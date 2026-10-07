@@ -10,6 +10,7 @@ FlyBrain connects the Drosophila Male CNS dataset to sparse neural simulation, G
 
 ## What you can do
 
+- **Run a fly in Minecraft 26.3.** An independent Survival player learns across lives, receives paired RGB eye images through mapped visual inputs, and exposes live eye previews alongside neural activity. See [Minecraft setup and limitations](MINECRAFT.md).
 - **Explore the CNS in 3D.** Orbit an anatomical cell map, select neurons, inspect spike counts, and display locally cached neuron branches.
 - **Run a live virtual fly.** Environmental sensory input passes through the sparse connectome to mapped motors, driving a procedural body with walking, takeoff, and landing.
 - **Paint stimulation onto neurons.** Draw on the CNS view or load local video/audio; image brightness and audio spectrograms become spatially mapped input currents.

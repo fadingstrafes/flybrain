@@ -77,6 +77,11 @@ def main():
 
     args = parser.parse_args()
 
+    if args.steps < 1 or args.max_recorded_events < 0:
+        parser.error("--steps must be positive and --max-recorded-events nonnegative")
+    if not 0 <= args.abort_fraction <= 1:
+        parser.error("--abort-fraction must be between 0 and 1")
+
     if not torch.cuda.is_available():
         raise RuntimeError(
             "PyTorch cannot see a GPU. On AMD/ROCm, torch.cuda.is_available() "
@@ -292,6 +297,8 @@ def main():
     recorded_counts = []
     recorded_event_count = 0
     recording_enabled = True
+    recording_stopped_step = None
+    aborted = False
 
     # ---------------------------------------------------------
     # Simulation
@@ -364,6 +371,7 @@ def main():
                     recorded_event_count = new_total
                 else:
                     recording_enabled = False
+                    recording_stopped_step = t
                     print(
                         "\nEvent recording limit reached; "
                         "continuing simulation without recording every spike."
@@ -393,6 +401,7 @@ def main():
                 args.abort_fraction > 0
                 and active_count > N * args.abort_fraction
             ):
+                aborted = True
                 print()
                 print("SIMULATION ABORTED:")
                 print(f"{active_count:,} neurons fired in one timestep.")
@@ -467,7 +476,9 @@ def main():
 
         print(f"{body_id:<10} {str(instance):<32} {count:>7} spikes")
 
-    pd.DataFrame(rows).to_csv(output / "top_active.csv", index=False)
+    pd.DataFrame(rows, columns=["bodyId", "instance", "superclass", "spikes"]).to_csv(
+        output / "top_active.csv", index=False
+    )
 
     # ---------------------------------------------------------
     # Target activity
@@ -520,7 +531,7 @@ def main():
             }
         )
 
-    active_motors = pd.DataFrame(active_motors)
+    active_motors = pd.DataFrame(active_motors, columns=["bodyId", "instance", "spikes"])
 
     if not active_motors.empty:
         active_motors = active_motors.sort_values("spikes", ascending=False)
@@ -531,7 +542,7 @@ def main():
         print("=" * 80)
         print(active_motors.head(50).to_string(index=False))
 
-        active_motors.to_csv(output / "active_motor_neurons.csv", index=False)
+    active_motors.to_csv(output / "active_motor_neurons.csv", index=False)
 
     # ---------------------------------------------------------
     # Save results
@@ -554,11 +565,15 @@ def main():
 
         event_body_ids = np.asarray(neuron_ids[indices])
 
-        np.savez_compressed(
-            output / "spike_events.npz",
-            time=times,
-            bodyId=event_body_ids,
-        )
+    else:
+        times = np.empty(0, dtype=np.int32)
+        event_body_ids = np.empty(0, dtype=np.int64)
+
+    np.savez_compressed(
+        output / "spike_events.npz",
+        time=times,
+        bodyId=event_body_ids,
+    )
 
     params = {
         "stimulate": args.stimulate,
@@ -571,6 +586,18 @@ def main():
         "leak": args.leak,
         "synaptic_gain": args.synaptic_gain,
         "min_weight": args.min_weight,
+        "dataset": "male-cns:v1.0",
+        "backend": "torch-rocm",
+        "completed_steps": completed_steps,
+        "aborted": aborted,
+        "abort_reason": "activity exceeded abort_fraction" if aborted else None,
+        "abort_fraction": args.abort_fraction,
+        "max_recorded_events": args.max_recorded_events,
+        "recorded_events": recorded_event_count,
+        "total_spikes": int(spike_counts.sum()),
+        "recording_complete": recording_enabled,
+        "recording_stopped_step": recording_stopped_step,
+        "simulation_seconds": sim_seconds,
     }
 
     with open(output / "params.json", "w") as f:

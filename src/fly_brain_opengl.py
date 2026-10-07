@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import time
 from pathlib import Path
@@ -7,6 +8,8 @@ import glfw
 import moderngl
 import numpy as np
 import pandas as pd
+
+from src.run_data import load_run
 
 
 CACHE = Path("data/cache")
@@ -24,7 +27,7 @@ def clean(value):
 
 
 def motor_group(row):
-    system = clean(row.get("system") or row.get("limb")).lower()
+    system = (clean(row.get("system")) or clean(row.get("limb"))).lower()
     side = clean(row.get("side")).upper()
     pair = clean(row.get("leg_pair")).lower()
 
@@ -36,19 +39,8 @@ def motor_group(row):
 
 
 def load_events(run):
-    path = run / "spike_events.npz"
-    if not path.exists():
-        raise RuntimeError(f"Missing {path}")
-
-    data = np.load(path)
-    times = data["time"].astype(np.int32)
-    body_ids = data["bodyId"].astype(np.int64)
-
-    if len(times) == 0:
-        raise RuntimeError("Run contains no spike events.")
-
-    order = np.argsort(times)
-    return times[order], body_ids[order]
+    data = load_run(run)
+    return data.times, data.body_ids
 
 
 def build_motor_activation(times, body_ids, motor_map, total_steps, decay=0.90):
@@ -280,9 +272,6 @@ def load_skeletons(run, max_skeletons):
     selected = pd.read_csv(selected_path)
     selected["bodyId"] = selected["bodyId"].astype(np.int64)
 
-    if max_skeletons > 0:
-        selected = selected.head(max_skeletons).copy()
-
     raw = []
     samples = []
 
@@ -292,13 +281,18 @@ def load_skeletons(run, max_skeletons):
         if not path.exists():
             continue
 
-        segments = np.load(path)["segments"].astype(np.float32)
+        with np.load(path, allow_pickle=False) as cache:
+            segments = cache["segments"].astype(np.float32)
         if len(segments) == 0:
             continue
+        if segments.ndim != 3 or segments.shape[1:] != (2, 3) or not np.isfinite(segments).all():
+            raise ValueError(f"Invalid skeleton segments in {path}")
 
         raw.append((body_id, segments))
         stride = max(1, len(segments) // 1500)
         samples.append(segments[::stride].reshape(-1, 3))
+        if max_skeletons > 0 and len(raw) >= max_skeletons:
+            break
 
     if not raw:
         raise RuntimeError("No cached skeleton .npz files could be loaded.")
@@ -322,6 +316,52 @@ def load_skeletons(run, max_skeletons):
     return normalized, total_segments
 
 
+def create_skeleton_batch(ctx, skeletons):
+    """One geometry upload and draw call; only a small activity texture changes."""
+    program = ctx.program(
+        vertex_shader="""
+            #version 330
+            in vec3 in_pos;
+            in float in_neuron;
+            uniform mat4 mvp;
+            uniform sampler2D activity;
+            flat out float spike_count;
+            void main() {
+                gl_Position = mvp * vec4(in_pos, 1.0);
+                spike_count = texelFetch(activity, ivec2(int(in_neuron), 0), 0).r;
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            flat in float spike_count;
+            uniform bool hide_inactive;
+            out vec4 fragColor;
+            void main() {
+                if (spike_count > 0.0) {
+                    float strength = min(1.0, 0.45 + 0.12 * spike_count);
+                    fragColor = vec4(1.0, 0.35 + 0.55 * strength, 0.10, 1.0);
+                } else {
+                    if (hide_inactive) discard;
+                    fragColor = vec4(0.16, 0.22, 0.32, 0.10);
+                }
+            }
+        """,
+    )
+    vertices = np.empty((sum(len(v) for _, v in skeletons), 4), dtype="f4")
+    start = 0
+    for index, (_, points) in enumerate(skeletons):
+        end = start + len(points)
+        vertices[start:end, :3] = points
+        vertices[start:end, 3] = index
+        start = end
+    vbo = ctx.buffer(vertices.tobytes())
+    vao = ctx.vertex_array(program, [(vbo, "3f 1f", "in_pos", "in_neuron")])
+    texture = ctx.texture((len(skeletons), 1), components=1, dtype="f4")
+    texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+    program["activity"].value = 0
+    return program, vbo, vao, texture
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="GPU/OpenGL realtime fly + connectome morphology viewer"
@@ -333,18 +373,28 @@ def main():
     parser.add_argument("--playback-hz", type=float, default=30.0)
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=900)
+    parser.add_argument("--no-vsync", action="store_true", help="Disable the display refresh cap")
+    parser.add_argument("--benchmark-frames", type=int, default=0,
+                        help="Exit after this many rendered frames (0: interactive)")
+    parser.add_argument("--benchmark-output", type=Path, help="Write render timing JSON")
     parser.add_argument(
         "--hide-inactive",
         action="store_true",
         help="Do not render faint inactive morphologies",
     )
     args = parser.parse_args()
+    if (args.trail < 0 or args.max_skeletons < 0 or args.benchmark_frames < 0
+            or args.width < 2 or args.height < 1 or args.playback_hz <= 0):
+        parser.error("Invalid window, playback, skeleton, trail, or benchmark settings")
 
     run = Path(args.run)
 
     print("[1/5] Loading spike events...", flush=True)
-    times, body_ids = load_events(run)
-    total_steps = int(times.max()) + 1
+    run_data = load_run(run)
+    times, body_ids = run_data.times, run_data.body_ids
+    total_steps = run_data.playback_steps
+    for notice in run_data.notices:
+        print(f"      {notice}", flush=True)
     print(f"      {len(times):,} spike events, {total_steps:,} steps", flush=True)
 
     print("[2/5] Building motor playback...", flush=True)
@@ -401,7 +451,7 @@ def main():
         raise RuntimeError("Could not create an OpenGL 3.3 window.")
 
     glfw.make_context_current(window)
-    glfw.swap_interval(1)
+    glfw.swap_interval(0 if args.no_vsync else 1)
 
     ctx = moderngl.create_context(require=330)
     ctx.enable(moderngl.DEPTH_TEST)
@@ -438,15 +488,10 @@ def main():
         """,
     )
 
-    skeleton_gl = []
-
-    for body_id, vertices in skeletons:
-        vbo = ctx.buffer(vertices.tobytes())
-        vao = ctx.vertex_array(
-            program,
-            [(vbo, "3f", "in_pos")],
-        )
-        skeleton_gl.append((body_id, vbo, vao, len(vertices)))
+    skeleton_program, skeleton_vbo, skeleton_vao, activity_texture = create_skeleton_batch(
+        ctx, skeletons
+    )
+    skeleton_program["hide_inactive"].value = args.hide_inactive
 
     fly_capacity = 4096 * 3 * 4
     fly_vbo = ctx.buffer(reserve=fly_capacity, dynamic=True)
@@ -539,14 +584,19 @@ def main():
     glfw.set_cursor_pos_callback(window, cursor_callback)
     glfw.set_scroll_callback(window, scroll_callback)
 
-    frame_index = {body_id: i for i, body_id in enumerate(selected_ids)}
-
     last_clock = time.perf_counter()
     playback_accum = 0.0
 
     fps_clock = last_clock
     rendered_frames = 0
     fps = 0.0
+    frame_durations = []
+    last_uploaded_frame = None
+    recording_status = (
+        "RECORDED PREFIX ONLY" if run_data.recording_complete is False else
+        "RECORDING UNVERIFIED" if run_data.recording_complete is None else
+        "LEGACY DURATION" if run_data.completed_steps is None else ""
+    )
 
     while not glfw.window_should_close(window):
         now = time.perf_counter()
@@ -563,9 +613,16 @@ def main():
                 state["frame"] = (state["frame"] + advance) % total_steps
                 playback_accum -= advance
 
+        # Deterministic benchmark traversal includes active and silent timesteps,
+        # even when rendering runs much faster than wall-clock playback.
+        if args.benchmark_frames:
+            state["frame"] = len(frame_durations) % total_steps
         frame = state["frame"]
 
         fbw, fbh = glfw.get_framebuffer_size(window)
+        if fbw < 2 or fbh < 1:
+            glfw.wait_events_timeout(0.05)
+            continue
         half = max(1, fbw // 2)
 
         ctx.clear(0.012, 0.016, 0.025, 1.0)
@@ -638,7 +695,7 @@ def main():
             np.array([0.0, 0.0, 1.0], dtype=np.float32),
         )
 
-        write_mat4(program["mvp"], cns_proj @ cns_view)
+        write_mat4(skeleton_program["mvp"], cns_proj @ cns_view)
 
         activity_row = skeleton_activity[frame]
 
@@ -647,38 +704,18 @@ def main():
         except Exception:
             pass
 
-        active_morphologies = 0
+        active_morphologies = int(np.count_nonzero(activity_row))
+        if frame != last_uploaded_frame:
+            activity_texture.write(np.asarray(activity_row, dtype="f4").tobytes())
+            last_uploaded_frame = frame
+        activity_texture.use(location=0)
+        skeleton_vao.render(mode=moderngl.LINES)
 
-        for body_id, vbo, vao, vertex_count in skeleton_gl:
-            col = frame_index[body_id]
-            count = int(activity_row[col])
-
-            if count > 0:
-                active_morphologies += 1
-                strength = min(1.0, 0.45 + 0.12 * count)
-                program["u_color"].value = (
-                    1.0,
-                    0.35 + 0.55 * strength,
-                    0.10,
-                    1.0,
-                )
-            else:
-                if args.hide_inactive:
-                    continue
-
-                program["u_color"].value = (
-                    0.16,
-                    0.22,
-                    0.32,
-                    0.10,
-                )
-
-            vao.render(
-                mode=moderngl.LINES,
-                vertices=vertex_count,
-            )
-
+        if args.benchmark_frames:
+            ctx.finish()  # Include GPU completion, not just command submission.
         glfw.swap_buffers(window)
+        if args.benchmark_frames:
+            frame_durations.append(time.perf_counter() - now)
 
         rendered_frames += 1
         if now - fps_clock >= 0.5:
@@ -694,13 +731,36 @@ def main():
                     f"step {frame}/{total_steps - 1} | "
                     f"{fps:5.1f} FPS | "
                     f"{active_morphologies} active morphologies | "
-                    f"{state['playback_hz']:.1f} steps/s"
+                    f"{state['playback_hz']:.1f} steps/s | {recording_status}"
                 ),
             )
+        if args.benchmark_frames and len(frame_durations) >= args.benchmark_frames:
+            break
 
-    for _, vbo, vao, _ in skeleton_gl:
-        vao.release()
-        vbo.release()
+    if frame_durations:
+        # Exclude startup shader/driver work when enough samples are available.
+        durations = np.asarray(frame_durations[min(30, len(frame_durations) // 4):])
+        report = {
+            "run": str(run), "dataset": "male-cns:v1.0",
+            "renderer": ctx.info.get("GL_RENDERER"),
+            "skeletons": len(skeletons), "segments": total_segments,
+            "skeleton_draw_calls": 1, "vsync": not args.no_vsync,
+            "framebuffer_size": [fbw, fbh],
+            "timing": "CPU frame including GPU completion and swap; deterministic timestep traversal",
+            "measured_frames": len(durations),
+            "mean_fps": float(1.0 / durations.mean()),
+            "median_frame_ms": float(np.median(durations) * 1000),
+            "p95_frame_ms": float(np.percentile(durations, 95) * 1000),
+        }
+        print(json.dumps(report, indent=2))
+        if args.benchmark_output:
+            args.benchmark_output.parent.mkdir(parents=True, exist_ok=True)
+            args.benchmark_output.write_text(json.dumps(report, indent=2) + "\n")
+
+    skeleton_vao.release()
+    skeleton_vbo.release()
+    activity_texture.release()
+    skeleton_program.release()
 
     fly_vao.release()
     fly_vbo.release()
