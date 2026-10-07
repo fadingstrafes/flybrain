@@ -133,6 +133,6 @@ a rendering client and client-loaded terrain.
 
 ## Repository About text
 
-Proposed GitHub description (requires authenticated repository-settings access):
+GitHub description (applied and verified on 2026-10-07):
 
 > Experimental Drosophila connectome simulator with a live neural viewer and a learning Minecraft fly: RGB eyes, persistent memory, foraging and player-like controls.
